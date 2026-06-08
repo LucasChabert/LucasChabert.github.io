@@ -207,7 +207,19 @@ function CarteExo({ exo, chapitresById, katexPret, onResultat, dejaFait }) {
     </article>
   );
 }
-
+async function supprimerExo(exo) {
+    if (!window.confirm(`Supprimer définitivement cet exercice ?\n\n${exo.enonce.slice(0, 80)}…`)) return;
+    const r = await fetch(api(`exercices?id=eq.${exo.id}`), {
+      method: "DELETE",
+      headers: { ...H, Prefer: "return=minimal" },
+    });
+    if (r.ok) {
+      setExos((prev) => prev.filter((x) => x.id !== exo.id));
+      if (exoCourant?.id === exo.id) setExoCourant(null);
+    } else {
+      alert("Échec de la suppression (vérifie la policy DELETE).");
+    }
+  }
 // ============================================================
 //  APP
 // ============================================================

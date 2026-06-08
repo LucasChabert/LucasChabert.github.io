@@ -48,6 +48,8 @@ function useKatex() {
 function rendreLatex(texte, katexPret) {
   if (!texte) return "";
   if (!katexPret || !window.katex) return texte;
+  // Remplace les \n littéraux (issus du JSON) par de vrais retours à la ligne
+  texte = texte.replace(/\\n/g, "\n");
   const morceaux = [];
   const regex = /(\$\$[^$]+\$\$|\$[^$]+\$)/g;
   let dernier = 0, m;

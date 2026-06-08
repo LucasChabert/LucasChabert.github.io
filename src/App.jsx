@@ -8,9 +8,10 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 const SUPABASE_URL = "https://pddfgcxmlnmqxbufthpz.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBkZGZnY3htbG5tcXhidWZ0aHB6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA3NzIyNTcsImV4cCI6MjA5NjM0ODI1N30.L4DH5q38KaZdi4KfxRfzoT4fC-REGw-PkN4j8JGeUpk";
 
-// NOTE SECURITE : le mot de passe de profil est stocke en clair et compare
-// cote client. C'est un garde-fou entre amis, PAS une vraie securite.
-// Pour du serieux, passer a Supabase Auth (mots de passe haches).
+// NOTE SECURITE : mot de passe stocke en clair-hache cote client, et la
+// suppression admin repose sur une policy DELETE ouverte au role anon.
+// C'est un garde-fou entre amis, PAS une vraie securite. Pour du serieux,
+// passer a Supabase Auth avec des roles.
 
 const H = {
   apikey: SUPABASE_ANON_KEY,
@@ -19,17 +20,10 @@ const H = {
 };
 const api = (chemin) => `${SUPABASE_URL}/rest/v1/${chemin}`;
 
-// ------------------------------------------------------------
-//  Hachage du mot de passe (SHA-256, cote navigateur).
-//  Le mot de passe en clair ne quitte jamais le navigateur ; seule
-//  l'empreinte est envoyee/comparee. NB : protection limitee, voir note.
-// ------------------------------------------------------------
 async function hacher(motDePasse) {
   const data = new TextEncoder().encode(motDePasse);
   const buf = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(buf))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 // ------------------------------------------------------------
@@ -82,18 +76,18 @@ function couleurElo(e) { return e < 1100 ? "#3a7d44" : e < 1400 ? "#caa43a" : e 
 function labelElo(e) { return e < 1100 ? "Application" : e < 1400 ? "Entraînement" : e < 1700 ? "Concours" : "X-ENS"; }
 
 // ============================================================
-//  ECRAN DE CONNEXION / CREATION DE PROFIL
+//  CONNEXION
 // ============================================================
 function Connexion({ onConnecte }) {
   const [profils, setProfils] = useState([]);
-  const [mode, setMode] = useState("choisir"); // choisir | creer
+  const [mode, setMode] = useState("choisir");
   const [pseudo, setPseudo] = useState("");
   const [mdp, setMdp] = useState("");
   const [msg, setMsg] = useState("");
 
   useEffect(() => {
     fetch(api("profils?select=id,pseudo"), { headers: H })
-      .then((r) => r.json()).then(setProfils).catch(() => {});
+      .then((r) => r.json()).then((d) => setProfils(Array.isArray(d) ? d : [])).catch(() => {});
   }, []);
 
   async function seConnecter() {
@@ -124,12 +118,10 @@ function Connexion({ onConnecte }) {
     <div className="connexion">
       <h1>Banque d'exercices</h1>
       <p className="sous-titre">Prépa MPSI · MP</p>
-
       <div className="onglets-co">
         <button className={mode === "choisir" ? "actif" : ""} onClick={() => setMode("choisir")}>Se connecter</button>
         <button className={mode === "creer" ? "actif" : ""} onClick={() => setMode("creer")}>Créer un profil</button>
       </div>
-
       {mode === "choisir" && profils.length > 0 && (
         <div className="champ">
           <label>Profils existants</label>
@@ -139,23 +131,19 @@ function Connexion({ onConnecte }) {
           </select>
         </div>
       )}
-
       {mode === "creer" && (
         <div className="champ">
           <label>Nouveau pseudo</label>
           <input value={pseudo} onChange={(e) => setPseudo(e.target.value)} placeholder="ton pseudo" />
         </div>
       )}
-
       <div className="champ">
         <label>Mot de passe</label>
         <input type="password" value={mdp} onChange={(e) => setMdp(e.target.value)} placeholder="••••••" />
       </div>
-
       <button className="btn-principal" onClick={mode === "creer" ? creer : seConnecter}>
         {mode === "creer" ? "Créer et entrer" : "Entrer"}
       </button>
-
       {msg && <div className="msg-co">{msg}</div>}
       <p className="avert-co">Mot de passe haché (SHA-256) — protection limitée, n'utilise pas un mot de passe sensible.</p>
     </div>
@@ -165,7 +153,7 @@ function Connexion({ onConnecte }) {
 // ============================================================
 //  CARTE EXERCICE
 // ============================================================
-function CarteExo({ exo, chapitresById, katexPret, onResultat, dejaFait }) {
+function CarteExo({ exo, chapitresById, katexPret, onResultat, dejaFait, onSupprimer }) {
   const [ouvert, setOuvert] = useState(false);
   const chap = chapitresById[exo.chapitre_id];
   return (
@@ -204,22 +192,15 @@ function CarteExo({ exo, chapitresById, katexPret, onResultat, dejaFait }) {
           )}
         </div>
       )}
+      {onSupprimer && (
+        <div className="exo-admin">
+          <button className="btn-suppr" onClick={() => onSupprimer(exo)}>Supprimer cet exo</button>
+        </div>
+      )}
     </article>
   );
 }
-async function supprimerExo(exo) {
-    if (!window.confirm(`Supprimer définitivement cet exercice ?\n\n${exo.enonce.slice(0, 80)}…`)) return;
-    const r = await fetch(api(`exercices?id=eq.${exo.id}`), {
-      method: "DELETE",
-      headers: { ...H, Prefer: "return=minimal" },
-    });
-    if (r.ok) {
-      setExos((prev) => prev.filter((x) => x.id !== exo.id));
-      if (exoCourant?.id === exo.id) setExoCourant(null);
-    } else {
-      alert("Échec de la suppression (vérifie la policy DELETE).");
-    }
-  }
+
 // ============================================================
 //  APP
 // ============================================================
@@ -228,16 +209,14 @@ export default function App() {
   const [profil, setProfil] = useState(null);
   const [exos, setExos] = useState([]);
   const [chapitres, setChapitres] = useState([]);
-  const [tentatives, setTentatives] = useState([]); // {exercice_id, reussi}
-  const [vue, setVue] = useState("entrainement"); // entrainement | liste
+  const [tentatives, setTentatives] = useState([]);
+  const [vue, setVue] = useState("entrainement");
   const [chargement, setChargement] = useState(false);
 
-  // filtres liste
   const [filiere, setFiliere] = useState("Toutes");
   const [chapitreId, setChapitreId] = useState("Tous");
   const [tri, setTri] = useState("elo_asc");
 
-  // entrainement
   const [exoCourant, setExoCourant] = useState(null);
   const [filiereEntr, setFiliereEntr] = useState("Toutes");
   const [chapitreEntr, setChapitreEntr] = useState("Tous");
@@ -248,13 +227,9 @@ export default function App() {
       const [rE, rC, rT] = await Promise.all([
         fetch(api("exercices?select=*"), { headers: H }),
         fetch(api("chapitres?select=*"), { headers: H }),
-        fetch(api(`tentatives?profil_id=eq.${prof.id}&select=exercice_id,reussi`), { headers: H }),
+        fetch(api(`tentatives?user_id=eq.${prof.id}&select=exercice_id,reussi`), { headers: H }),
       ]);
-      // On ne garde que ce qui est bien un tableau ; sinon liste vide.
-      const safe = async (r) => {
-        const d = await r.json();
-        return Array.isArray(d) ? d : [];
-      };
+      const safe = async (r) => { const d = await r.json(); return Array.isArray(d) ? d : []; };
       setExos(await safe(rE));
       setChapitres(await safe(rC));
       setTentatives(await safe(rT));
@@ -277,14 +252,12 @@ export default function App() {
     [chapitres]
   );
 
-  // map exercice_id -> "reussi" | "rate"
   const faitsParExo = useMemo(() => {
     const o = {};
     tentatives.forEach((t) => { o[t.exercice_id] = t.reussi ? "reussi" : "rate"; });
     return o;
   }, [tentatives]);
 
-  // --- Tirage aleatoire d'un exo NON tente ---
   const tirerExo = useCallback(() => {
     let pool = exos.filter((x) => !faitsParExo[x.id]);
     if (filiereEntr !== "Toutes")
@@ -295,15 +268,33 @@ export default function App() {
     setExoCourant(pool[Math.floor(Math.random() * pool.length)]);
   }, [exos, faitsParExo, filiereEntr, chapitreEntr, chapitresById]);
 
-  // --- Enregistrer un resultat (auto-evaluation) ---
+  useEffect(() => {
+    if (vue === "entrainement" && !exoCourant && exos.length) tirerExo();
+  }, [vue, exos, exoCourant, tirerExo]);
+
   async function enregistrer(exo, reussi) {
     await fetch(api("tentatives"), {
       method: "POST",
       headers: { ...H, Prefer: "return=minimal" },
-      body: JSON.stringify({ profil_id: profil.id, exercice_id: exo.id, reussi }),
+      body: JSON.stringify({ user_id: profil.id, exercice_id: exo.id, reussi }),
     });
     setTentatives((prev) => [...prev, { exercice_id: exo.id, reussi }]);
-    setExoCourant(null); // declenche un nouveau tirage
+    setExoCourant(null);
+  }
+
+  // --- Suppression admin (dans App : acces a setExos, exoCourant) ---
+  async function supprimerExo(exo) {
+    if (!window.confirm(`Supprimer définitivement cet exercice ?\n\n${(exo.enonce || "").slice(0, 80)}…`)) return;
+    const r = await fetch(api(`exercices?id=eq.${exo.id}`), {
+      method: "DELETE",
+      headers: { ...H, Prefer: "return=minimal" },
+    });
+    if (r.ok) {
+      setExos((prev) => prev.filter((x) => x.id !== exo.id));
+      if (exoCourant?.id === exo.id) setExoCourant(null);
+    } else {
+      alert("Échec de la suppression (vérifie la policy DELETE sur exercices).");
+    }
   }
 
   const exosListe = useMemo(() => {
@@ -314,12 +305,13 @@ export default function App() {
     return xs;
   }, [exos, chapitresById, filiere, chapitreId, tri]);
 
-  const stats = useMemo(() => {
-    const total = exos.length;
-    const faits = tentatives.length;
-    const reussis = tentatives.filter((t) => t.reussi).length;
-    return { total, faits, reussis };
-  }, [exos, tentatives]);
+  const stats = useMemo(() => ({
+    total: exos.length,
+    faits: tentatives.length,
+    reussis: tentatives.filter((t) => t.reussi).length,
+  }), [exos, tentatives]);
+
+  const estAdmin = profil && profil.est_admin === true;
 
   if (!profil) {
     return <div className="app"><style>{CSS}</style><Connexion onConnecte={setProfil} /></div>;
@@ -328,11 +320,12 @@ export default function App() {
   return (
     <div className="app">
       <style>{CSS}</style>
-
       <header className="entete">
         <div className="entete-titre">
           <h1>Banque d'exercices</h1>
-          <p className="sous-titre">Bonjour {profil.pseudo} — {stats.faits}/{stats.total} faits · {stats.reussis} réussis</p>
+          <p className="sous-titre">
+            Bonjour {profil.pseudo}{estAdmin ? " (admin)" : ""} — {stats.faits}/{stats.total} faits · {stats.reussis} réussis
+          </p>
         </div>
         <button className="btn-deco" onClick={() => { setProfil(null); setExoCourant(null); }}>Changer de profil</button>
       </header>
@@ -348,6 +341,12 @@ export default function App() {
         <section className="entrainement">
           <div className="barre-filtres">
             <div className="champ">
+              <label>Filière</label>
+              <select value={filiereEntr} onChange={(e) => { setFiliereEntr(e.target.value); setChapitreEntr("Tous"); setExoCourant(null); }}>
+                {filieres.map((f) => <option key={f} value={f}>{f}</option>)}
+              </select>
+            </div>
+            <div className="champ">
               <label>Chapitre</label>
               <select value={chapitreEntr} onChange={(e) => { setChapitreEntr(e.target.value); setExoCourant(null); }}>
                 <option value="Tous">Tous</option>
@@ -358,12 +357,12 @@ export default function App() {
             </div>
             <button className="btn-tirer" onClick={tirerExo}>Autre exercice →</button>
           </div>
-
           {exoCourant ? (
             <CarteExo exo={exoCourant} chapitresById={chapitresById} katexPret={katexPret}
-                      onResultat={enregistrer} dejaFait={null} />
+                      onResultat={enregistrer} dejaFait={null}
+                      onSupprimer={estAdmin ? supprimerExo : null} />
           ) : (
-            <div className="info">Plus d'exercice non tenté dans cette sélection. Change de filière ou consulte « Tous les exos ».</div>
+            <div className="info">Plus d'exercice non tenté dans cette sélection. Change de filière/chapitre ou consulte « Tous les exos ».</div>
           )}
         </section>
       )}
@@ -397,7 +396,8 @@ export default function App() {
           <div className="liste">
             {exosListe.map((exo) => (
               <CarteExo key={exo.id} exo={exo} chapitresById={chapitresById} katexPret={katexPret}
-                        onResultat={enregistrer} dejaFait={faitsParExo[exo.id]} />
+                        onResultat={enregistrer} dejaFait={faitsParExo[exo.id]}
+                        onSupprimer={estAdmin ? supprimerExo : null} />
             ))}
           </div>
         </section>
@@ -419,8 +419,6 @@ const CSS = `
 }
 h1 { font-family:'Fraunces',serif; font-weight:700; font-size:clamp(1.9rem,4vw,3rem); letter-spacing:-0.02em; line-height:1; }
 .sous-titre { font-style:italic; color:#6b6453; margin-top:0.4rem; font-size:1.02rem; }
-
-/* connexion */
 .connexion { max-width:380px; margin:8vh auto; display:flex; flex-direction:column; gap:1rem; }
 .onglets-co { display:flex; gap:0.5rem; margin-top:1rem; }
 .onglets-co button, .onglets button {
@@ -428,25 +426,18 @@ h1 { font-family:'Fraunces',serif; font-weight:700; font-size:clamp(1.9rem,4vw,3
   background:var(--papier-2); border:1px solid var(--trait); border-radius:2px; cursor:pointer; color:#6b6453;
 }
 .onglets-co button.actif, .onglets button.actif { background:var(--accent); color:#fff; border-color:var(--accent); }
-.btn-principal {
-  font-family:'Spline Sans Mono',monospace; font-size:0.9rem; padding:0.7rem; cursor:pointer;
-  background:var(--accent); color:#fff; border:none; border-radius:2px; margin-top:0.5rem;
-}
+.btn-principal { font-family:'Spline Sans Mono',monospace; font-size:0.9rem; padding:0.7rem; cursor:pointer; background:var(--accent); color:#fff; border:none; border-radius:2px; margin-top:0.5rem; }
 .msg-co { color:var(--rouge); font-family:'Spline Sans Mono',monospace; font-size:0.82rem; }
 .avert-co { font-size:0.78rem; color:#6b6453; font-style:italic; }
-
-/* entete */
 .entete { display:flex; justify-content:space-between; align-items:flex-end; border-bottom:2px solid var(--encre); padding-bottom:1.1rem; }
 .btn-deco { font-family:'Spline Sans Mono',monospace; font-size:0.78rem; background:none; border:1px solid var(--trait); padding:0.4rem 0.7rem; border-radius:2px; cursor:pointer; color:#6b6453; }
 .onglets { display:flex; gap:0.5rem; margin:1.3rem 0; }
-
 .barre-filtres { display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-end; padding-bottom:1.3rem; margin-bottom:1.3rem; border-bottom:1px solid var(--trait); }
 .champ { display:flex; flex-direction:column; gap:0.3rem; }
 .champ label { font-family:'Spline Sans Mono',monospace; font-size:0.66rem; text-transform:uppercase; letter-spacing:0.15em; color:#6b6453; }
 .champ select, .champ input { font-family:'Newsreader',serif; font-size:0.98rem; padding:0.5rem 0.7rem; border:1px solid var(--trait); background:var(--papier-2); color:var(--encre); border-radius:2px; min-width:150px; outline:none; }
 .champ select:focus, .champ input:focus { border-color:var(--accent); }
 .btn-tirer { font-family:'Spline Sans Mono',monospace; font-size:0.85rem; padding:0.55rem 1rem; background:var(--encre); color:var(--papier); border:none; border-radius:2px; cursor:pointer; }
-
 .liste { display:flex; flex-direction:column; gap:1.1rem; }
 .exo { background:#fbf8f0; border:1px solid var(--trait); border-left:3px solid var(--accent); border-radius:3px; padding:1.4rem 1.6rem; box-shadow:0 8px 24px -18px rgba(0,0,0,0.4); animation:monte 0.4s ease both; }
 @keyframes monte { from{opacity:0;transform:translateY(8px);} to{opacity:1;transform:none;} }
@@ -470,5 +461,8 @@ h1 { font-family:'Fraunces',serif; font-weight:700; font-size:clamp(1.9rem,4vw,3
 .btn-reussi { background:var(--vert); }
 .btn-rate { background:var(--rouge); }
 .deja { font-family:'Spline Sans Mono',monospace; font-size:0.8rem; color:#6b6453; font-style:italic; }
+.exo-admin { margin-top:0.8rem; padding-top:0.8rem; border-top:1px dashed var(--rouge); }
+.btn-suppr { font-family:'Spline Sans Mono',monospace; font-size:0.78rem; background:none; border:1px solid var(--rouge); color:var(--rouge); padding:0.35rem 0.7rem; border-radius:2px; cursor:pointer; }
+.btn-suppr:hover { background:var(--rouge); color:#fff; }
 .info { text-align:center; padding:3rem 1rem; color:#6b6453; font-style:italic; font-size:1.05rem; }
 `;

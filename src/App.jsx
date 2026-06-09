@@ -1,17 +1,10 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 
 // ============================================================
 //  CONFIGURATION SUPABASE
-//  Colle ta cle anon/publishable (publique, protegee par RLS).
-//  NE METS JAMAIS la cle service_role ici.
 // ============================================================
 const SUPABASE_URL = "https://pddfgcxmlnmqxbufthpz.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBkZGZnY3htbG5tcXhidWZ0aHB6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA3NzIyNTcsImV4cCI6MjA5NjM0ODI1N30.L4DH5q38KaZdi4KfxRfzoT4fC-REGw-PkN4j8JGeUpk";
-
-// NOTE SECURITE : mot de passe stocke en clair-hache cote client, et la
-// suppression admin repose sur une policy DELETE ouverte au role anon.
-// C'est un garde-fou entre amis, PAS une vraie securite. Pour du serieux,
-// passer a Supabase Auth avec des roles.
 
 const H = {
   apikey: SUPABASE_ANON_KEY,
@@ -47,9 +40,9 @@ function useKatex() {
 
 function rendreLatex(texte, katexPret) {
   if (!texte) return "";
-  if (!katexPret || !window.katex) return texte;
-  // Remplace les \n littéraux (issus du JSON) par de vrais retours à la ligne
+  // Corrige les \n littéraux issus du JSON (affichés tels quels sinon)
   texte = texte.replace(/\\n/g, "\n");
+  if (!katexPret || !window.katex) return texte;
   const morceaux = [];
   const regex = /(\$\$[^$]+\$\$|\$[^$]+\$)/g;
   let dernier = 0, m;
@@ -63,7 +56,7 @@ function rendreLatex(texte, katexPret) {
   }
   if (dernier < texte.length) morceaux.push({ t: texte.slice(dernier), math: false });
   return morceaux.map((p) => {
-    if (!p.math) return p.t.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    if (!p.math) return p.t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/\n/g, "<br/>");
     try { return window.katex.renderToString(p.t, { displayMode: p.display, throwOnError: false }); }
     catch { return p.t; }
   }).join("");
@@ -76,6 +69,68 @@ function Latex({ children, katexPret }) {
 
 function couleurElo(e) { return e < 1100 ? "#3a7d44" : e < 1400 ? "#caa43a" : e < 1700 ? "#c8762f" : "#b3402f"; }
 function labelElo(e) { return e < 1100 ? "Application" : e < 1400 ? "Entraînement" : e < 1700 ? "Concours" : "X-ENS"; }
+
+// ============================================================
+//  MULTI-SELECT AVEC RECHERCHE (cases à cocher + champ de recherche)
+//  options : [{ value, label }]   selection : Set de values
+// ============================================================
+function MultiSelect({ titre, options, selection, onChange, placeholder }) {
+  const [ouvert, setOuvert] = useState(false);
+  const [recherche, setRecherche] = useState("");
+  const ref = useRef(null);
+
+  useEffect(() => {
+    function clicDehors(e) { if (ref.current && !ref.current.contains(e.target)) setOuvert(false); }
+    document.addEventListener("mousedown", clicDehors);
+    return () => document.removeEventListener("mousedown", clicDehors);
+  }, []);
+
+  const filtrees = useMemo(() => {
+    const q = recherche.trim().toLowerCase();
+    if (!q) return options;
+    return options.filter((o) => o.label.toLowerCase().includes(q));
+  }, [options, recherche]);
+
+  function toggle(value) {
+    const next = new Set(selection);
+    if (next.has(value)) next.delete(value); else next.add(value);
+    onChange(next);
+  }
+
+  const resume =
+    selection.size === 0 ? (placeholder || "Tous")
+    : selection.size === 1 ? (options.find((o) => selection.has(o.value))?.label || "1 choisi")
+    : `${selection.size} sélectionnés`;
+
+  return (
+    <div className="champ" ref={ref}>
+      <label>{titre}</label>
+      <div className="ms">
+        <button type="button" className="ms-resume" onClick={() => setOuvert(!ouvert)}>
+          <span>{resume}</span><span className="ms-fleche">{ouvert ? "▴" : "▾"}</span>
+        </button>
+        {ouvert && (
+          <div className="ms-panneau">
+            <input className="ms-search" autoFocus value={recherche}
+                   onChange={(e) => setRecherche(e.target.value)} placeholder="Rechercher…" />
+            <div className="ms-actions">
+              <button type="button" onClick={() => onChange(new Set())}>Tout désélectionner</button>
+            </div>
+            <div className="ms-liste">
+              {filtrees.length === 0 && <div className="ms-vide">Aucun résultat</div>}
+              {filtrees.map((o) => (
+                <label key={o.value} className="ms-item">
+                  <input type="checkbox" checked={selection.has(o.value)} onChange={() => toggle(o.value)} />
+                  <span>{o.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // ============================================================
 //  CONNEXION
@@ -215,13 +270,14 @@ export default function App() {
   const [vue, setVue] = useState("entrainement");
   const [chargement, setChargement] = useState(false);
 
-  const [filiere, setFiliere] = useState("Toutes");
-  const [chapitreId, setChapitreId] = useState("Tous");
+  // Sélections multiples (Set d'ids de chapitres / de sources)
+  const [chapEntr, setChapEntr] = useState(new Set());
+  const [srcEntr, setSrcEntr] = useState(new Set());
+  const [chapListe, setChapListe] = useState(new Set());
+  const [srcListe, setSrcListe] = useState(new Set());
   const [tri, setTri] = useState("elo_asc");
 
   const [exoCourant, setExoCourant] = useState(null);
-  const [filiereEntr, setFiliereEntr] = useState("Toutes");
-  const [chapitreEntr, setChapitreEntr] = useState("Tous");
 
   const chargerDonnees = useCallback(async (prof) => {
     setChargement(true);
@@ -238,9 +294,7 @@ export default function App() {
     } catch (e) {
       console.error("Erreur de chargement :", e);
       setExos([]); setChapitres([]); setTentatives([]);
-    } finally {
-      setChargement(false);
-    }
+    } finally { setChargement(false); }
   }, []);
 
   useEffect(() => { if (profil) chargerDonnees(profil); }, [profil, chargerDonnees]);
@@ -249,10 +303,16 @@ export default function App() {
     const o = {}; chapitres.forEach((c) => (o[c.id] = c)); return o;
   }, [chapitres]);
 
-  const filieres = useMemo(
-    () => ["Toutes", ...Array.from(new Set(chapitres.map((c) => c.filiere))).sort()],
+  // Options pour les multi-selects
+  const optionsChapitres = useMemo(
+    () => [...chapitres].sort((a, b) => (a.ordre || 0) - (b.ordre || 0))
+      .map((c) => ({ value: c.id, label: `${c.filiere} · ${c.nom}` })),
     [chapitres]
   );
+  const optionsSources = useMemo(() => {
+    const set = new Set(exos.map((x) => x.source).filter(Boolean));
+    return Array.from(set).sort().map((s) => ({ value: s, label: s }));
+  }, [exos]);
 
   const faitsParExo = useMemo(() => {
     const o = {};
@@ -260,15 +320,21 @@ export default function App() {
     return o;
   }, [tentatives]);
 
+  // Filtre générique : chapitres (Set) + sources (Set)
+  const filtrer = useCallback((liste, chapSet, srcSet) => {
+    let xs = liste;
+    if (chapSet.size > 0) xs = xs.filter((x) => chapSet.has(x.chapitre_id));
+    if (srcSet.size > 0) xs = xs.filter((x) => srcSet.has(x.source));
+    return xs;
+  }, []);
+
+  // --- Tirage aléatoire d'un exo non tenté, selon chapitres+sources ---
   const tirerExo = useCallback(() => {
     let pool = exos.filter((x) => !faitsParExo[x.id]);
-    if (filiereEntr !== "Toutes")
-      pool = pool.filter((x) => chapitresById[x.chapitre_id]?.filiere === filiereEntr);
-    if (chapitreEntr !== "Tous")
-      pool = pool.filter((x) => x.chapitre_id === chapitreEntr);
+    pool = filtrer(pool, chapEntr, srcEntr);
     if (!pool.length) { setExoCourant(null); return; }
     setExoCourant(pool[Math.floor(Math.random() * pool.length)]);
-  }, [exos, faitsParExo, filiereEntr, chapitreEntr, chapitresById]);
+  }, [exos, faitsParExo, chapEntr, srcEntr, filtrer]);
 
   useEffect(() => {
     if (vue === "entrainement" && !exoCourant && exos.length) tirerExo();
@@ -284,40 +350,30 @@ export default function App() {
     setExoCourant(null);
   }
 
-  // --- Suppression admin (dans App : acces a setExos, exoCourant) ---
   async function supprimerExo(exo) {
     if (!window.confirm(`Supprimer définitivement cet exercice ?\n\n${(exo.enonce || "").slice(0, 80)}…`)) return;
     const r = await fetch(api(`exercices?id=eq.${exo.id}`), {
-      method: "DELETE",
-      headers: { ...H, Prefer: "return=minimal" },
+      method: "DELETE", headers: { ...H, Prefer: "return=minimal" },
     });
     if (r.ok) {
       setExos((prev) => prev.filter((x) => x.id !== exo.id));
       if (exoCourant?.id === exo.id) setExoCourant(null);
-    } else {
-      alert("Échec de la suppression (vérifie la policy DELETE sur exercices).");
-    }
+    } else { alert("Échec de la suppression (vérifie la policy DELETE)."); }
   }
 
   const exosListe = useMemo(() => {
-    let xs = [...exos];
-    if (filiere !== "Toutes") xs = xs.filter((x) => chapitresById[x.chapitre_id]?.filiere === filiere);
-    if (chapitreId !== "Tous") xs = xs.filter((x) => x.chapitre_id === chapitreId);
+    let xs = filtrer([...exos], chapListe, srcListe);
     xs.sort((a, b) => (tri === "elo_desc" ? b.elo - a.elo : a.elo - b.elo));
     return xs;
-  }, [exos, chapitresById, filiere, chapitreId, tri]);
+  }, [exos, chapListe, srcListe, tri, filtrer]);
 
   const stats = useMemo(() => ({
-    total: exos.length,
-    faits: tentatives.length,
-    reussis: tentatives.filter((t) => t.reussi).length,
+    total: exos.length, faits: tentatives.length, reussis: tentatives.filter((t) => t.reussi).length,
   }), [exos, tentatives]);
 
   const estAdmin = profil && profil.est_admin === true;
 
-  if (!profil) {
-    return <div className="app"><style>{CSS}</style><Connexion onConnecte={setProfil} /></div>;
-  }
+  if (!profil) return <div className="app"><style>{CSS}</style><Connexion onConnecte={setProfil} /></div>;
 
   return (
     <div className="app">
@@ -342,21 +398,12 @@ export default function App() {
       {vue === "entrainement" && !chargement && (
         <section className="entrainement">
           <div className="barre-filtres">
-            <div className="champ">
-              <label>Filière</label>
-              <select value={filiereEntr} onChange={(e) => { setFiliereEntr(e.target.value); setChapitreEntr("Tous"); setExoCourant(null); }}>
-                {filieres.map((f) => <option key={f} value={f}>{f}</option>)}
-              </select>
-            </div>
-            <div className="champ">
-              <label>Chapitre</label>
-              <select value={chapitreEntr} onChange={(e) => { setChapitreEntr(e.target.value); setExoCourant(null); }}>
-                <option value="Tous">Tous</option>
-                {chapitres.filter((c) => filiereEntr === "Toutes" || c.filiere === filiereEntr)
-                  .sort((a, b) => (a.ordre || 0) - (b.ordre || 0))
-                  .map((c) => <option key={c.id} value={c.id}>{c.nom}</option>)}
-              </select>
-            </div>
+            <MultiSelect titre="Chapitres" options={optionsChapitres}
+                         selection={chapEntr} onChange={(s) => { setChapEntr(s); setExoCourant(null); }}
+                         placeholder="Tous les chapitres" />
+            <MultiSelect titre="Sources" options={optionsSources}
+                         selection={srcEntr} onChange={(s) => { setSrcEntr(s); setExoCourant(null); }}
+                         placeholder="Toutes les sources" />
             <button className="btn-tirer" onClick={tirerExo}>Autre exercice →</button>
           </div>
           {exoCourant ? (
@@ -364,7 +411,7 @@ export default function App() {
                       onResultat={enregistrer} dejaFait={null}
                       onSupprimer={estAdmin ? supprimerExo : null} />
           ) : (
-            <div className="info">Plus d'exercice non tenté dans cette sélection. Change de filière/chapitre ou consulte « Tous les exos ».</div>
+            <div className="info">Aucun exercice non tenté dans cette sélection. Élargis les filtres ou va dans « Tous les exos ».</div>
           )}
         </section>
       )}
@@ -372,21 +419,10 @@ export default function App() {
       {vue === "liste" && !chargement && (
         <section>
           <div className="barre-filtres">
-            <div className="champ">
-              <label>Filière</label>
-              <select value={filiere} onChange={(e) => { setFiliere(e.target.value); setChapitreId("Tous"); }}>
-                {filieres.map((f) => <option key={f} value={f}>{f}</option>)}
-              </select>
-            </div>
-            <div className="champ">
-              <label>Chapitre</label>
-              <select value={chapitreId} onChange={(e) => setChapitreId(e.target.value)}>
-                <option value="Tous">Tous</option>
-                {chapitres.filter((c) => filiere === "Toutes" || c.filiere === filiere)
-                  .sort((a, b) => (a.ordre || 0) - (b.ordre || 0))
-                  .map((c) => <option key={c.id} value={c.id}>{c.nom}</option>)}
-              </select>
-            </div>
+            <MultiSelect titre="Chapitres" options={optionsChapitres}
+                         selection={chapListe} onChange={setChapListe} placeholder="Tous les chapitres" />
+            <MultiSelect titre="Sources" options={optionsSources}
+                         selection={srcListe} onChange={setSrcListe} placeholder="Toutes les sources" />
             <div className="champ">
               <label>Tri</label>
               <select value={tri} onChange={(e) => setTri(e.target.value)}>
@@ -395,6 +431,7 @@ export default function App() {
               </select>
             </div>
           </div>
+          <div className="compte-liste">{exosListe.length} exercice(s)</div>
           <div className="liste">
             {exosListe.map((exo) => (
               <CarteExo key={exo.id} exo={exo} chapitresById={chapitresById} katexPret={katexPret}
@@ -434,12 +471,30 @@ h1 { font-family:'Fraunces',serif; font-weight:700; font-size:clamp(1.9rem,4vw,3
 .entete { display:flex; justify-content:space-between; align-items:flex-end; border-bottom:2px solid var(--encre); padding-bottom:1.1rem; }
 .btn-deco { font-family:'Spline Sans Mono',monospace; font-size:0.78rem; background:none; border:1px solid var(--trait); padding:0.4rem 0.7rem; border-radius:2px; cursor:pointer; color:#6b6453; }
 .onglets { display:flex; gap:0.5rem; margin:1.3rem 0; }
-.barre-filtres { display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-end; padding-bottom:1.3rem; margin-bottom:1.3rem; border-bottom:1px solid var(--trait); }
-.champ { display:flex; flex-direction:column; gap:0.3rem; }
+.barre-filtres { display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-end; padding-bottom:1.3rem; margin-bottom:1rem; border-bottom:1px solid var(--trait); }
+.champ { display:flex; flex-direction:column; gap:0.3rem; position:relative; }
 .champ label { font-family:'Spline Sans Mono',monospace; font-size:0.66rem; text-transform:uppercase; letter-spacing:0.15em; color:#6b6453; }
 .champ select, .champ input { font-family:'Newsreader',serif; font-size:0.98rem; padding:0.5rem 0.7rem; border:1px solid var(--trait); background:var(--papier-2); color:var(--encre); border-radius:2px; min-width:150px; outline:none; }
 .champ select:focus, .champ input:focus { border-color:var(--accent); }
-.btn-tirer { font-family:'Spline Sans Mono',monospace; font-size:0.85rem; padding:0.55rem 1rem; background:var(--encre); color:var(--papier); border:none; border-radius:2px; cursor:pointer; }
+.btn-tirer { font-family:'Spline Sans Mono',monospace; font-size:0.85rem; padding:0.55rem 1rem; background:var(--encre); color:var(--papier); border:none; border-radius:2px; cursor:pointer; height:fit-content; }
+
+/* multi-select */
+.ms { position:relative; }
+.ms-resume { font-family:'Newsreader',serif; font-size:0.98rem; padding:0.5rem 0.7rem; border:1px solid var(--trait); background:var(--papier-2); color:var(--encre); border-radius:2px; min-width:200px; cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:0.5rem; }
+.ms-fleche { color:#6b6453; font-size:0.75rem; }
+.ms-panneau { position:absolute; top:calc(100% + 4px); left:0; z-index:30; width:min(320px,80vw); background:#fbf8f0; border:1px solid var(--trait); border-radius:3px; box-shadow:0 12px 30px -12px rgba(0,0,0,0.4); padding:0.6rem; }
+.ms-search { width:100%; font-family:'Newsreader',serif; font-size:0.92rem; padding:0.45rem 0.6rem; border:1px solid var(--trait); background:var(--papier); border-radius:2px; outline:none; margin-bottom:0.4rem; }
+.ms-search:focus { border-color:var(--accent); }
+.ms-actions { margin-bottom:0.4rem; }
+.ms-actions button { font-family:'Spline Sans Mono',monospace; font-size:0.7rem; background:none; border:none; color:var(--accent); cursor:pointer; padding:0; }
+.ms-actions button:hover { text-decoration:underline; }
+.ms-liste { max-height:240px; overflow-y:auto; display:flex; flex-direction:column; gap:0.1rem; }
+.ms-item { display:flex; align-items:center; gap:0.5rem; padding:0.3rem 0.4rem; border-radius:2px; cursor:pointer; font-size:0.92rem; }
+.ms-item:hover { background:var(--papier-2); }
+.ms-item input { width:auto; min-width:0; }
+.ms-vide { font-style:italic; color:#6b6453; font-size:0.85rem; padding:0.4rem; }
+
+.compte-liste { font-family:'Spline Sans Mono',monospace; font-size:0.75rem; color:#6b6453; margin-bottom:1rem; }
 .liste { display:flex; flex-direction:column; gap:1.1rem; }
 .exo { background:#fbf8f0; border:1px solid var(--trait); border-left:3px solid var(--accent); border-radius:3px; padding:1.4rem 1.6rem; box-shadow:0 8px 24px -18px rgba(0,0,0,0.4); animation:monte 0.4s ease both; }
 @keyframes monte { from{opacity:0;transform:translateY(8px);} to{opacity:1;transform:none;} }

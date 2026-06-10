@@ -440,6 +440,161 @@ function SectionCours({ profil, katexPret }) {
 }
 
 // ============================================================
+//  GENERATEUR DE DS (page imprimable)
+// ============================================================
+function melange(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function GenerateurDS({ profil, exos, chapitres, chapitresById, optionsChapitres, optionsSources, katexPret }) {
+  const [cartes, setCartes] = useState([]);
+  const [nbCours, setNbCours] = useState(5);
+  const [nbExos, setNbExos] = useState(3);
+  const [paquetsSel, setPaquetsSel] = useState(new Set());
+  const [chapSel, setChapSel] = useState(new Set());
+  const [srcSel, setSrcSel] = useState(new Set());
+  const [titre, setTitre] = useState("Devoir surveillé");
+  const [ds, setDs] = useState(null); // { cours:[], exos:[] }
+
+  useEffect(() => {
+    fetch(api(`cartes?user_id=eq.${profil.id}&select=*`), { headers: H })
+      .then((r) => r.json()).then((d) => setCartes(Array.isArray(d) ? d : [])).catch(() => {});
+  }, [profil.id]);
+
+  const optionsPaquets = useMemo(() => {
+    const set = new Set(cartes.map((c) => c.paquet || "Général"));
+    return Array.from(set).sort().map((p) => ({ value: p, label: p }));
+  }, [cartes]);
+
+  function generer() {
+    // questions de cours = cartes des paquets choisis
+    let poolCours = cartes;
+    if (paquetsSel.size > 0) poolCours = poolCours.filter((c) => paquetsSel.has(c.paquet || "Général"));
+    const cours = melange(poolCours).slice(0, nbCours);
+    // exos selon chapitres + sources
+    let poolExos = exos;
+    if (chapSel.size > 0) poolExos = poolExos.filter((x) => chapSel.has(x.chapitre_id));
+    if (srcSel.size > 0) poolExos = poolExos.filter((x) => srcSel.has(x.source));
+    const exosTires = melange(poolExos).slice(0, nbExos);
+    setDs({ cours, exos: exosTires });
+  }
+
+  function imprimer() { window.print(); }
+
+  return (
+    <section className="ds">
+      <div className="ds-reglages no-print">
+        <div className="barre-filtres">
+          <div className="champ">
+            <label>Titre du DS</label>
+            <input value={titre} onChange={(e) => setTitre(e.target.value)} />
+          </div>
+          <div className="champ">
+            <label>Nb questions de cours</label>
+            <input type="number" min="0" value={nbCours} onChange={(e) => setNbCours(Math.max(0, +e.target.value))} />
+          </div>
+          <div className="champ">
+            <label>Nb exercices</label>
+            <input type="number" min="0" value={nbExos} onChange={(e) => setNbExos(Math.max(0, +e.target.value))} />
+          </div>
+        </div>
+        <div className="barre-filtres">
+          <MultiSelect titre="Paquets (cours)" options={optionsPaquets}
+                       selection={paquetsSel} onChange={setPaquetsSel} placeholder="Tous les paquets" />
+          <MultiSelect titre="Chapitres (exos)" options={optionsChapitres}
+                       selection={chapSel} onChange={setChapSel} placeholder="Tous les chapitres" />
+          <MultiSelect titre="Sources (exos)" options={optionsSources}
+                       selection={srcSel} onChange={setSrcSel} placeholder="Toutes les sources" />
+          <button className="btn-tirer" onClick={generer}>
+            {ds ? "Relancer le tirage" : "Générer le DS"}
+          </button>
+          {ds && <button className="btn-principal btn-imprimer" onClick={imprimer}>Imprimer / PDF</button>}
+        </div>
+        {ds && (ds.cours.length < nbCours || ds.exos.length < nbExos) && (
+          <p className="ds-avert">Attention : pas assez de cartes/exos dans la sélection pour atteindre les nombres demandés ({ds.cours.length} cours, {ds.exos.length} exos disponibles).</p>
+        )}
+      </div>
+
+      {ds && (
+        <div className="ds-feuille">
+          <div className="ds-entete">
+            <h2>{titre}</h2>
+            <div className="ds-ligne-nom">Nom : ............................................  Durée : ............</div>
+          </div>
+
+          {ds.cours.length > 0 && (
+            <div className="ds-partie">
+              <h3>Questions de cours</h3>
+              <ol className="ds-ol">
+                {ds.cours.map((c) => (
+                  <li key={c.id} className="ds-item">
+                    <Latex katexPret={katexPret}>{c.recto}</Latex>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
+          {ds.exos.length > 0 && (
+            <div className="ds-partie">
+              <h3>Exercices</h3>
+              <ol className="ds-ol">
+                {ds.exos.map((x) => {
+                  const chap = chapitresById[x.chapitre_id];
+                  return (
+                    <li key={x.id} className="ds-item ds-exo">
+                      <div className="ds-exo-meta">
+                        {chap && <span>{chap.nom}</span>}{x.source && <span> · {x.source}</span>}
+                      </div>
+                      <Latex katexPret={katexPret}>{x.enonce}</Latex>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          )}
+
+          {/* Corrigé en fin de document, sur nouvelle page */}
+          <div className="ds-corrige">
+            <h2 className="ds-saut-page">Corrigé</h2>
+            {ds.cours.length > 0 && (
+              <div className="ds-partie">
+                <h3>Questions de cours</h3>
+                <ol className="ds-ol">
+                  {ds.cours.map((c) => (
+                    <li key={c.id} className="ds-item">
+                      <div className="ds-q"><Latex katexPret={katexPret}>{c.recto}</Latex></div>
+                      <div className="ds-r"><Latex katexPret={katexPret}>{c.verso}</Latex></div>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
+            {ds.exos.length > 0 && (
+              <div className="ds-partie">
+                <h3>Exercices</h3>
+                <ol className="ds-ol">
+                  {ds.exos.map((x) => (
+                    <li key={x.id} className="ds-item">
+                      {x.correction ? <Latex katexPret={katexPret}>{x.correction}</Latex>
+                        : <span className="ds-pas-corr">Pas de correction disponible pour cet exercice.</span>}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ============================================================
 //  APP
 // ============================================================
 export default function App() {
@@ -560,6 +715,7 @@ export default function App() {
         <button className={vue === "entrainement" ? "actif" : ""} onClick={() => setVue("entrainement")}>Entraînement</button>
         <button className={vue === "liste" ? "actif" : ""} onClick={() => setVue("liste")}>Tous les exos</button>
         <button className={vue === "cours" ? "actif" : ""} onClick={() => setVue("cours")}>Cours</button>
+        <button className={vue === "ds" ? "actif" : ""} onClick={() => setVue("ds")}>Générateur de DS</button>
       </nav>
 
       {chargement && vue !== "cours" && <div className="info">Chargement…</div>}
@@ -610,6 +766,12 @@ export default function App() {
       )}
 
       {vue === "cours" && <SectionCours profil={profil} katexPret={katexPret} />}
+
+      {vue === "ds" && (
+        <GenerateurDS profil={profil} exos={exos} chapitres={chapitres}
+                      chapitresById={chapitresById} optionsChapitres={optionsChapitres}
+                      optionsSources={optionsSources} katexPret={katexPret} />
+      )}
     </div>
   );
 }
@@ -711,4 +873,30 @@ h1 { font-family:'Fraunces',serif; font-weight:700; font-size:clamp(1.9rem,4vw,3
 .import-zone:focus { border-color:var(--accent); }
 .import-bas { display:flex; align-items:center; gap:1rem; margin-top:1rem; }
 .import-msg { font-family:'Spline Sans Mono',monospace; font-size:0.82rem; color:var(--accent); }
+
+/* GENERATEUR DE DS */
+.btn-imprimer { margin-top:0; padding:0.55rem 1rem; }
+.ds-avert { color:var(--accent); font-family:'Spline Sans Mono',monospace; font-size:0.82rem; margin-top:0.5rem; }
+.ds-feuille { background:#fff; border:1px solid var(--trait); border-radius:3px; padding:2.5rem; margin-top:1.5rem; max-width:820px; }
+.ds-entete { border-bottom:2px solid var(--encre); padding-bottom:1rem; margin-bottom:1.5rem; }
+.ds-entete h2 { font-family:'Fraunces',serif; font-size:1.8rem; }
+.ds-ligne-nom { font-family:'Spline Sans Mono',monospace; font-size:0.85rem; color:#444; margin-top:0.8rem; }
+.ds-partie { margin-bottom:1.8rem; }
+.ds-partie h3 { font-family:'Fraunces',serif; font-size:1.3rem; margin-bottom:0.8rem; border-bottom:1px solid var(--trait); padding-bottom:0.3rem; }
+.ds-ol { padding-left:1.4rem; display:flex; flex-direction:column; gap:1rem; }
+.ds-item { font-size:1.08rem; line-height:1.6; padding-left:0.3rem; }
+.ds-exo-meta { font-family:'Spline Sans Mono',monospace; font-size:0.72rem; color:#888; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.3rem; }
+.ds-corrige { margin-top:2rem; }
+.ds-saut-page { font-family:'Fraunces',serif; font-size:1.6rem; border-top:2px solid var(--encre); padding-top:1.5rem; }
+.ds-q { font-weight:600; }
+.ds-r { color:#444; margin-top:0.3rem; }
+.ds-pas-corr { font-style:italic; color:#999; }
+
+@media print {
+  .no-print, .entete, .onglets { display:none !important; }
+  .app { padding:0; background:#fff; }
+  .ds-feuille { border:none; box-shadow:none; padding:0; max-width:none; margin:0; }
+  .ds-saut-page { page-break-before:always; }
+  .ds-item { page-break-inside:avoid; }
+}
 `;

@@ -40,7 +40,6 @@ function useKatex() {
 
 function rendreLatex(texte, katexPret) {
   if (!texte) return "";
-  // Corrige les \n littéraux issus du JSON (affichés tels quels sinon)
   texte = texte.replace(/\\n/g, "\n");
   if (!katexPret || !window.katex) return texte;
   const morceaux = [];
@@ -71,37 +70,30 @@ function couleurElo(e) { return e < 1100 ? "#3a7d44" : e < 1400 ? "#caa43a" : e 
 function labelElo(e) { return e < 1100 ? "Application" : e < 1400 ? "Entraînement" : e < 1700 ? "Concours" : "X-ENS"; }
 
 // ============================================================
-//  MULTI-SELECT AVEC RECHERCHE (cases à cocher + champ de recherche)
-//  options : [{ value, label }]   selection : Set de values
+//  MULTI-SELECT AVEC RECHERCHE
 // ============================================================
 function MultiSelect({ titre, options, selection, onChange, placeholder }) {
   const [ouvert, setOuvert] = useState(false);
   const [recherche, setRecherche] = useState("");
   const ref = useRef(null);
-
   useEffect(() => {
     function clicDehors(e) { if (ref.current && !ref.current.contains(e.target)) setOuvert(false); }
     document.addEventListener("mousedown", clicDehors);
     return () => document.removeEventListener("mousedown", clicDehors);
   }, []);
-
   const filtrees = useMemo(() => {
     const q = recherche.trim().toLowerCase();
     if (!q) return options;
     return options.filter((o) => o.label.toLowerCase().includes(q));
   }, [options, recherche]);
-
   function toggle(value) {
     const next = new Set(selection);
     if (next.has(value)) next.delete(value); else next.add(value);
     onChange(next);
   }
-
-  const resume =
-    selection.size === 0 ? (placeholder || "Tous")
+  const resume = selection.size === 0 ? (placeholder || "Tous")
     : selection.size === 1 ? (options.find((o) => selection.has(o.value))?.label || "1 choisi")
     : `${selection.size} sélectionnés`;
-
   return (
     <div className="champ" ref={ref}>
       <label>{titre}</label>
@@ -141,12 +133,10 @@ function Connexion({ onConnecte }) {
   const [pseudo, setPseudo] = useState("");
   const [mdp, setMdp] = useState("");
   const [msg, setMsg] = useState("");
-
   useEffect(() => {
     fetch(api("profils?select=id,pseudo"), { headers: H })
       .then((r) => r.json()).then((d) => setProfils(Array.isArray(d) ? d : [])).catch(() => {});
   }, []);
-
   async function seConnecter() {
     setMsg("");
     const r = await fetch(api(`profils?pseudo=eq.${encodeURIComponent(pseudo)}&select=*`), { headers: H });
@@ -156,13 +146,11 @@ function Connexion({ onConnecte }) {
     if (data[0].mot_de_passe !== empreinte) { setMsg("Mot de passe incorrect."); return; }
     onConnecte(data[0]);
   }
-
   async function creer() {
     setMsg("");
     if (!pseudo.trim() || !mdp.trim()) { setMsg("Pseudo et mot de passe requis."); return; }
     const r = await fetch(api("profils"), {
-      method: "POST",
-      headers: { ...H, Prefer: "return=representation" },
+      method: "POST", headers: { ...H, Prefer: "return=representation" },
       body: JSON.stringify({ pseudo: pseudo.trim(), mot_de_passe: await hacher(mdp) }),
     });
     if (r.status === 409) { setMsg("Ce pseudo existe déjà."); return; }
@@ -170,7 +158,6 @@ function Connexion({ onConnecte }) {
     const data = await r.json();
     onConnecte(data[0]);
   }
-
   return (
     <div className="connexion">
       <h1>Banque d'exercices</h1>
@@ -259,6 +246,200 @@ function CarteExo({ exo, chapitresById, katexPret, onResultat, dejaFait, onSuppr
 }
 
 // ============================================================
+//  SECTION COURS (flashcards, propres au profil)
+// ============================================================
+function SectionCours({ profil, katexPret }) {
+  const [cartes, setCartes] = useState([]);
+  const [chargement, setChargement] = useState(true);
+  const [paquet, setPaquet] = useState("Tous");
+  const [sousVue, setSousVue] = useState("liste"); // liste | reviser | importer
+
+  // révision
+  const [ordre, setOrdre] = useState([]);     // indices mélangés
+  const [pos, setPos] = useState(0);
+  const [retourne, setRetourne] = useState(false);
+
+  // import
+  const [nomPaquet, setNomPaquet] = useState("");
+  const [separateur, setSeparateur] = useState(";");
+  const [contenu, setContenu] = useState("");
+  const [msgImport, setMsgImport] = useState("");
+
+  const charger = useCallback(async () => {
+    setChargement(true);
+    const r = await fetch(api(`cartes?user_id=eq.${profil.id}&select=*`), { headers: H });
+    const d = await r.json();
+    setCartes(Array.isArray(d) ? d : []);
+    setChargement(false);
+  }, [profil.id]);
+
+  useEffect(() => { charger(); }, [charger]);
+
+  const paquets = useMemo(
+    () => ["Tous", ...Array.from(new Set(cartes.map((c) => c.paquet || "Général"))).sort()],
+    [cartes]
+  );
+  const cartesPaquet = useMemo(
+    () => paquet === "Tous" ? cartes : cartes.filter((c) => (c.paquet || "Général") === paquet),
+    [cartes, paquet]
+  );
+
+  function demarrerRevision() {
+    const idx = cartesPaquet.map((_, i) => i);
+    for (let i = idx.length - 1; i > 0; i--) { // mélange
+      const j = Math.floor(Math.random() * (i + 1)); [idx[i], idx[j]] = [idx[j], idx[i]];
+    }
+    setOrdre(idx); setPos(0); setRetourne(false); setSousVue("reviser");
+  }
+
+  async function importer() {
+    setMsgImport("");
+    const lignes = contenu.split("\n").map((l) => l.trim()).filter(Boolean);
+    const nouvelles = [];
+    for (const ligne of lignes) {
+      const i = ligne.indexOf(separateur);
+      if (i === -1) continue; // ligne sans séparateur ignorée
+      const recto = ligne.slice(0, i).trim();
+      const verso = ligne.slice(i + 1).trim();
+      if (recto && verso) nouvelles.push({
+        user_id: profil.id, recto, verso, paquet: (nomPaquet.trim() || "Général"),
+      });
+    }
+    if (!nouvelles.length) { setMsgImport("Aucune carte valide détectée. Vérifie le séparateur."); return; }
+    const r = await fetch(api("cartes"), {
+      method: "POST", headers: { ...H, Prefer: "return=minimal" },
+      body: JSON.stringify(nouvelles),
+    });
+    if (r.ok) {
+      setMsgImport(`${nouvelles.length} carte(s) importée(s).`);
+      setContenu(""); setNomPaquet("");
+      charger();
+    } else { setMsgImport("Erreur à l'import (vérifie que la table 'cartes' existe)."); }
+  }
+
+  async function supprimerPaquet(nom) {
+    if (!window.confirm(`Supprimer toutes les cartes du paquet « ${nom} » ?`)) return;
+    await fetch(api(`cartes?user_id=eq.${profil.id}&paquet=eq.${encodeURIComponent(nom)}`), {
+      method: "DELETE", headers: { ...H, Prefer: "return=minimal" },
+    });
+    charger();
+  }
+
+  if (chargement) return <div className="info">Chargement des cartes…</div>;
+
+  return (
+    <section className="cours">
+      <div className="cours-onglets">
+        <button className={sousVue === "liste" ? "actif" : ""} onClick={() => setSousVue("liste")}>Mes paquets</button>
+        <button className={sousVue === "importer" ? "actif" : ""} onClick={() => setSousVue("importer")}>Importer</button>
+      </div>
+
+      {sousVue === "liste" && (
+        <>
+          {cartes.length === 0 ? (
+            <div className="info">Aucune carte. Va dans « Importer » pour ajouter tes cartes Anki (export texte).</div>
+          ) : (
+            <>
+              <div className="barre-filtres">
+                <div className="champ">
+                  <label>Paquet</label>
+                  <select value={paquet} onChange={(e) => setPaquet(e.target.value)}>
+                    {paquets.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+                <button className="btn-tirer" onClick={demarrerRevision} disabled={!cartesPaquet.length}>
+                  Réviser ({cartesPaquet.length}) →
+                </button>
+                {paquet !== "Tous" && (
+                  <button className="btn-suppr" onClick={() => supprimerPaquet(paquet)}>Supprimer ce paquet</button>
+                )}
+              </div>
+              <div className="cartes-grille">
+                {cartesPaquet.map((c) => (
+                  <div key={c.id} className="mini-carte">
+                    <div className="mini-recto"><Latex katexPret={katexPret}>{c.recto}</Latex></div>
+                    <div className="mini-verso"><Latex katexPret={katexPret}>{c.verso}</Latex></div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {sousVue === "reviser" && (
+        <div className="revision">
+          {ordre.length === 0 ? (
+            <div className="info">Paquet vide.</div>
+          ) : pos >= ordre.length ? (
+            <div className="revision-fin">
+              <p>Révision terminée — {ordre.length} carte(s).</p>
+              <button className="btn-tirer" onClick={() => setSousVue("liste")}>Retour aux paquets</button>
+            </div>
+          ) : (
+            <>
+              <div className="revision-compteur">{pos + 1} / {ordre.length}</div>
+              <div className="flashcard" onClick={() => setRetourne(!retourne)}>
+                <div className="flashcard-face">
+                  <span className="flashcard-label">{retourne ? "Verso" : "Recto"}</span>
+                  <div className="flashcard-contenu">
+                    <Latex katexPret={katexPret}>
+                      {retourne ? cartesPaquet[ordre[pos]].verso : cartesPaquet[ordre[pos]].recto}
+                    </Latex>
+                  </div>
+                  {!retourne && <div className="flashcard-aide">Clique pour retourner</div>}
+                </div>
+              </div>
+              <div className="revision-actions">
+                {retourne ? (
+                  <button className="btn-tirer" onClick={() => { setPos(pos + 1); setRetourne(false); }}>
+                    Carte suivante →
+                  </button>
+                ) : (
+                  <button className="btn-tirer" onClick={() => setRetourne(true)}>Voir la réponse</button>
+                )}
+                <button className="btn-deco" onClick={() => setSousVue("liste")}>Arrêter</button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {sousVue === "importer" && (
+        <div className="import">
+          <p className="import-aide">
+            Dans Anki : <em>Fichier → Exporter → Notes en texte brut</em>. Ouvre le fichier, copie son
+            contenu et colle-le ci-dessous. Une carte par ligne, recto et verso séparés par le séparateur choisi.
+          </p>
+          <div className="barre-filtres">
+            <div className="champ">
+              <label>Nom du paquet</label>
+              <input value={nomPaquet} onChange={(e) => setNomPaquet(e.target.value)} placeholder="ex. Analyse MP" />
+            </div>
+            <div className="champ">
+              <label>Séparateur</label>
+              <select value={separateur} onChange={(e) => setSeparateur(e.target.value)}>
+                <option value=";">point-virgule ;</option>
+                <option value={"\t"}>tabulation</option>
+                <option value=",">virgule ,</option>
+                <option value="|">barre |</option>
+              </select>
+            </div>
+          </div>
+          <textarea className="import-zone" rows={10} value={contenu}
+                    onChange={(e) => setContenu(e.target.value)}
+                    placeholder={"recto 1;verso 1\nrecto 2;verso 2"} />
+          <div className="import-bas">
+            <button className="btn-tirer" onClick={importer}>Importer les cartes</button>
+            {msgImport && <span className="import-msg">{msgImport}</span>}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ============================================================
 //  APP
 // ============================================================
 export default function App() {
@@ -270,13 +451,11 @@ export default function App() {
   const [vue, setVue] = useState("entrainement");
   const [chargement, setChargement] = useState(false);
 
-  // Sélections multiples (Set d'ids de chapitres / de sources)
   const [chapEntr, setChapEntr] = useState(new Set());
   const [srcEntr, setSrcEntr] = useState(new Set());
   const [chapListe, setChapListe] = useState(new Set());
   const [srcListe, setSrcListe] = useState(new Set());
   const [tri, setTri] = useState("elo_asc");
-
   const [exoCourant, setExoCourant] = useState(null);
 
   const chargerDonnees = useCallback(async (prof) => {
@@ -288,13 +467,9 @@ export default function App() {
         fetch(api(`tentatives?user_id=eq.${prof.id}&select=exercice_id,reussi`), { headers: H }),
       ]);
       const safe = async (r) => { const d = await r.json(); return Array.isArray(d) ? d : []; };
-      setExos(await safe(rE));
-      setChapitres(await safe(rC));
-      setTentatives(await safe(rT));
-    } catch (e) {
-      console.error("Erreur de chargement :", e);
-      setExos([]); setChapitres([]); setTentatives([]);
-    } finally { setChargement(false); }
+      setExos(await safe(rE)); setChapitres(await safe(rC)); setTentatives(await safe(rT));
+    } catch (e) { setExos([]); setChapitres([]); setTentatives([]); }
+    finally { setChargement(false); }
   }, []);
 
   useEffect(() => { if (profil) chargerDonnees(profil); }, [profil, chargerDonnees]);
@@ -303,7 +478,6 @@ export default function App() {
     const o = {}; chapitres.forEach((c) => (o[c.id] = c)); return o;
   }, [chapitres]);
 
-  // Options pour les multi-selects
   const optionsChapitres = useMemo(
     () => [...chapitres].sort((a, b) => (a.ordre || 0) - (b.ordre || 0))
       .map((c) => ({ value: c.id, label: `${c.filiere} · ${c.nom}` })),
@@ -315,12 +489,10 @@ export default function App() {
   }, [exos]);
 
   const faitsParExo = useMemo(() => {
-    const o = {};
-    tentatives.forEach((t) => { o[t.exercice_id] = t.reussi ? "reussi" : "rate"; });
+    const o = {}; tentatives.forEach((t) => { o[t.exercice_id] = t.reussi ? "reussi" : "rate"; });
     return o;
   }, [tentatives]);
 
-  // Filtre générique : chapitres (Set) + sources (Set)
   const filtrer = useCallback((liste, chapSet, srcSet) => {
     let xs = liste;
     if (chapSet.size > 0) xs = xs.filter((x) => chapSet.has(x.chapitre_id));
@@ -328,7 +500,6 @@ export default function App() {
     return xs;
   }, []);
 
-  // --- Tirage aléatoire d'un exo non tenté, selon chapitres+sources ---
   const tirerExo = useCallback(() => {
     let pool = exos.filter((x) => !faitsParExo[x.id]);
     pool = filtrer(pool, chapEntr, srcEntr);
@@ -342,8 +513,7 @@ export default function App() {
 
   async function enregistrer(exo, reussi) {
     await fetch(api("tentatives"), {
-      method: "POST",
-      headers: { ...H, Prefer: "return=minimal" },
+      method: "POST", headers: { ...H, Prefer: "return=minimal" },
       body: JSON.stringify({ user_id: profil.id, exercice_id: exo.id, reussi }),
     });
     setTentatives((prev) => [...prev, { exercice_id: exo.id, reussi }]);
@@ -352,9 +522,7 @@ export default function App() {
 
   async function supprimerExo(exo) {
     if (!window.confirm(`Supprimer définitivement cet exercice ?\n\n${(exo.enonce || "").slice(0, 80)}…`)) return;
-    const r = await fetch(api(`exercices?id=eq.${exo.id}`), {
-      method: "DELETE", headers: { ...H, Prefer: "return=minimal" },
-    });
+    const r = await fetch(api(`exercices?id=eq.${exo.id}`), { method: "DELETE", headers: { ...H, Prefer: "return=minimal" } });
     if (r.ok) {
       setExos((prev) => prev.filter((x) => x.id !== exo.id));
       if (exoCourant?.id === exo.id) setExoCourant(null);
@@ -391,9 +559,10 @@ export default function App() {
       <nav className="onglets">
         <button className={vue === "entrainement" ? "actif" : ""} onClick={() => setVue("entrainement")}>Entraînement</button>
         <button className={vue === "liste" ? "actif" : ""} onClick={() => setVue("liste")}>Tous les exos</button>
+        <button className={vue === "cours" ? "actif" : ""} onClick={() => setVue("cours")}>Cours</button>
       </nav>
 
-      {chargement && <div className="info">Chargement…</div>}
+      {chargement && vue !== "cours" && <div className="info">Chargement…</div>}
 
       {vue === "entrainement" && !chargement && (
         <section className="entrainement">
@@ -408,8 +577,7 @@ export default function App() {
           </div>
           {exoCourant ? (
             <CarteExo exo={exoCourant} chapitresById={chapitresById} katexPret={katexPret}
-                      onResultat={enregistrer} dejaFait={null}
-                      onSupprimer={estAdmin ? supprimerExo : null} />
+                      onResultat={enregistrer} dejaFait={null} onSupprimer={estAdmin ? supprimerExo : null} />
           ) : (
             <div className="info">Aucun exercice non tenté dans cette sélection. Élargis les filtres ou va dans « Tous les exos ».</div>
           )}
@@ -435,12 +603,13 @@ export default function App() {
           <div className="liste">
             {exosListe.map((exo) => (
               <CarteExo key={exo.id} exo={exo} chapitresById={chapitresById} katexPret={katexPret}
-                        onResultat={enregistrer} dejaFait={faitsParExo[exo.id]}
-                        onSupprimer={estAdmin ? supprimerExo : null} />
+                        onResultat={enregistrer} dejaFait={faitsParExo[exo.id]} onSupprimer={estAdmin ? supprimerExo : null} />
             ))}
           </div>
         </section>
       )}
+
+      {vue === "cours" && <SectionCours profil={profil} katexPret={katexPret} />}
     </div>
   );
 }
@@ -459,26 +628,26 @@ const CSS = `
 h1 { font-family:'Fraunces',serif; font-weight:700; font-size:clamp(1.9rem,4vw,3rem); letter-spacing:-0.02em; line-height:1; }
 .sous-titre { font-style:italic; color:#6b6453; margin-top:0.4rem; font-size:1.02rem; }
 .connexion { max-width:380px; margin:8vh auto; display:flex; flex-direction:column; gap:1rem; }
-.onglets-co { display:flex; gap:0.5rem; margin-top:1rem; }
-.onglets-co button, .onglets button {
+.onglets-co, .cours-onglets { display:flex; gap:0.5rem; margin-top:1rem; }
+.onglets-co button, .onglets button, .cours-onglets button {
   font-family:'Spline Sans Mono',monospace; font-size:0.8rem; padding:0.5rem 0.9rem;
   background:var(--papier-2); border:1px solid var(--trait); border-radius:2px; cursor:pointer; color:#6b6453;
 }
-.onglets-co button.actif, .onglets button.actif { background:var(--accent); color:#fff; border-color:var(--accent); }
+.onglets-co button.actif, .onglets button.actif, .cours-onglets button.actif { background:var(--accent); color:#fff; border-color:var(--accent); }
 .btn-principal { font-family:'Spline Sans Mono',monospace; font-size:0.9rem; padding:0.7rem; cursor:pointer; background:var(--accent); color:#fff; border:none; border-radius:2px; margin-top:0.5rem; }
 .msg-co { color:var(--rouge); font-family:'Spline Sans Mono',monospace; font-size:0.82rem; }
 .avert-co { font-size:0.78rem; color:#6b6453; font-style:italic; }
 .entete { display:flex; justify-content:space-between; align-items:flex-end; border-bottom:2px solid var(--encre); padding-bottom:1.1rem; }
 .btn-deco { font-family:'Spline Sans Mono',monospace; font-size:0.78rem; background:none; border:1px solid var(--trait); padding:0.4rem 0.7rem; border-radius:2px; cursor:pointer; color:#6b6453; }
 .onglets { display:flex; gap:0.5rem; margin:1.3rem 0; }
+.cours-onglets { margin:1.3rem 0; }
 .barre-filtres { display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-end; padding-bottom:1.3rem; margin-bottom:1rem; border-bottom:1px solid var(--trait); }
 .champ { display:flex; flex-direction:column; gap:0.3rem; position:relative; }
 .champ label { font-family:'Spline Sans Mono',monospace; font-size:0.66rem; text-transform:uppercase; letter-spacing:0.15em; color:#6b6453; }
 .champ select, .champ input { font-family:'Newsreader',serif; font-size:0.98rem; padding:0.5rem 0.7rem; border:1px solid var(--trait); background:var(--papier-2); color:var(--encre); border-radius:2px; min-width:150px; outline:none; }
 .champ select:focus, .champ input:focus { border-color:var(--accent); }
 .btn-tirer { font-family:'Spline Sans Mono',monospace; font-size:0.85rem; padding:0.55rem 1rem; background:var(--encre); color:var(--papier); border:none; border-radius:2px; cursor:pointer; height:fit-content; }
-
-/* multi-select */
+.btn-tirer:disabled { opacity:0.4; cursor:not-allowed; }
 .ms { position:relative; }
 .ms-resume { font-family:'Newsreader',serif; font-size:0.98rem; padding:0.5rem 0.7rem; border:1px solid var(--trait); background:var(--papier-2); color:var(--encre); border-radius:2px; min-width:200px; cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:0.5rem; }
 .ms-fleche { color:#6b6453; font-size:0.75rem; }
@@ -493,7 +662,6 @@ h1 { font-family:'Fraunces',serif; font-weight:700; font-size:clamp(1.9rem,4vw,3
 .ms-item:hover { background:var(--papier-2); }
 .ms-item input { width:auto; min-width:0; }
 .ms-vide { font-style:italic; color:#6b6453; font-size:0.85rem; padding:0.4rem; }
-
 .compte-liste { font-family:'Spline Sans Mono',monospace; font-size:0.75rem; color:#6b6453; margin-bottom:1rem; }
 .liste { display:flex; flex-direction:column; gap:1.1rem; }
 .exo { background:#fbf8f0; border:1px solid var(--trait); border-left:3px solid var(--accent); border-radius:3px; padding:1.4rem 1.6rem; box-shadow:0 8px 24px -18px rgba(0,0,0,0.4); animation:monte 0.4s ease both; }
@@ -519,7 +687,28 @@ h1 { font-family:'Fraunces',serif; font-weight:700; font-size:clamp(1.9rem,4vw,3
 .btn-rate { background:var(--rouge); }
 .deja { font-family:'Spline Sans Mono',monospace; font-size:0.8rem; color:#6b6453; font-style:italic; }
 .exo-admin { margin-top:0.8rem; padding-top:0.8rem; border-top:1px dashed var(--rouge); }
-.btn-suppr { font-family:'Spline Sans Mono',monospace; font-size:0.78rem; background:none; border:1px solid var(--rouge); color:var(--rouge); padding:0.35rem 0.7rem; border-radius:2px; cursor:pointer; }
+.btn-suppr { font-family:'Spline Sans Mono',monospace; font-size:0.78rem; background:none; border:1px solid var(--rouge); color:var(--rouge); padding:0.35rem 0.7rem; border-radius:2px; cursor:pointer; height:fit-content; }
 .btn-suppr:hover { background:var(--rouge); color:#fff; }
 .info { text-align:center; padding:3rem 1rem; color:#6b6453; font-style:italic; font-size:1.05rem; }
+/* COURS */
+.cartes-grille { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:1rem; }
+.mini-carte { background:#fbf8f0; border:1px solid var(--trait); border-radius:3px; overflow:hidden; }
+.mini-recto { padding:0.8rem 1rem; font-size:1rem; border-bottom:1px dashed var(--trait); }
+.mini-verso { padding:0.8rem 1rem; font-size:0.95rem; color:#6b6453; background:var(--papier-2); }
+.revision { max-width:600px; margin:1rem auto; display:flex; flex-direction:column; align-items:center; gap:1.2rem; }
+.revision-compteur { font-family:'Spline Sans Mono',monospace; font-size:0.8rem; color:#6b6453; }
+.flashcard { width:100%; min-height:240px; background:#fbf8f0; border:1px solid var(--trait); border-left:3px solid var(--accent); border-radius:4px; cursor:pointer; display:flex; align-items:center; justify-content:center; padding:2rem; box-shadow:0 10px 30px -16px rgba(0,0,0,0.4); transition:transform 0.1s; }
+.flashcard:hover { transform:translateY(-2px); }
+.flashcard-face { text-align:center; width:100%; }
+.flashcard-label { font-family:'Spline Sans Mono',monospace; font-size:0.65rem; text-transform:uppercase; letter-spacing:0.15em; color:#6b6453; display:block; margin-bottom:1rem; }
+.flashcard-contenu { font-size:1.3rem; line-height:1.5; }
+.flashcard-aide { margin-top:1.2rem; font-style:italic; font-size:0.85rem; color:#6b6453; }
+.revision-actions { display:flex; gap:0.8rem; }
+.revision-fin { text-align:center; display:flex; flex-direction:column; gap:1rem; align-items:center; padding:2rem; }
+.import { max-width:700px; }
+.import-aide { font-style:italic; color:#6b6453; margin-bottom:1rem; line-height:1.5; }
+.import-zone { width:100%; font-family:'Spline Sans Mono',monospace; font-size:0.85rem; padding:0.8rem; border:1px solid var(--trait); background:var(--papier-2); border-radius:3px; outline:none; resize:vertical; }
+.import-zone:focus { border-color:var(--accent); }
+.import-bas { display:flex; align-items:center; gap:1rem; margin-top:1rem; }
+.import-msg { font-family:'Spline Sans Mono',monospace; font-size:0.82rem; color:var(--accent); }
 `;

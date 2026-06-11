@@ -38,8 +38,34 @@ function useKatex() {
   return pret;
 }
 
+// Nettoie le HTML et la syntaxe LaTeX d'Anki pour les ramener au format $...$
+function nettoyerAnki(texte) {
+  if (!texte) return "";
+  let t = texte;
+  // Syntaxe LaTeX d'Anki -> $...$
+  t = t.replace(/\[latex\]([\s\S]*?)\[\/latex\]/g, (_, m) => "$" + m.trim() + "$");
+  t = t.replace(/\[\$\$\]([\s\S]*?)\[\/\$\$\]/g, (_, m) => "$$" + m.trim() + "$$");
+  t = t.replace(/\[\$\]([\s\S]*?)\[\/\$\]/g, (_, m) => "$" + m.trim() + "$");
+  t = t.replace(/\\\(([\s\S]*?)\\\)/g, (_, m) => "$" + m.trim() + "$");
+  t = t.replace(/\\\[([\s\S]*?)\\\]/g, (_, m) => "$$" + m.trim() + "$$");
+  // Images Anki non disponibles -> petit marqueur
+  t = t.replace(/<img[^>]*>/gi, " [image non disponible] ");
+  // Sauts de ligne HTML -> espace (le rendu gère deja les vrais \n)
+  t = t.replace(/<br\s*\/?>/gi, " ");
+  t = t.replace(/<\/(div|p|li)>/gi, " ");
+  // Retirer toutes les autres balises HTML, en gardant leur contenu texte
+  t = t.replace(/<[^>]+>/g, "");
+  // Decoder les entites HTML courantes
+  const ent = { "&nbsp;": " ", "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'", "&rsquo;": "\u2019" };
+  t = t.replace(/&[a-zA-Z#0-9]+;/g, (e) => ent[e] !== undefined ? ent[e] : e);
+  // Espaces multiples
+  t = t.replace(/[ \t]{2,}/g, " ").trim();
+  return t;
+}
+
 function rendreLatex(texte, katexPret) {
   if (!texte) return "";
+  texte = nettoyerAnki(texte);
   texte = texte.replace(/\\n/g, "\n");
   if (!katexPret || !window.katex) return texte;
   const morceaux = [];
